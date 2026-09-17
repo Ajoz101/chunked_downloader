@@ -230,16 +230,17 @@ class ChunkDownloader {
       //     await sink.close();
       //   }
       // });
-      await Isolate.run(() => _mergeChunks(tmpDirPath, savePath, numChunks));
-
+      // await Isolate.run(() => _mergeChunks(tmpDirPath, savePath, numChunks));
+      // 1. In ChunkDownloader.download():
+      await Isolate.run(
+        () => _mergeChunksTask(_MergeArgs(tmpDirPath, savePath, numChunks)),
+      );
       final finalSize = await outputFile.length();
       if (finalSize != contentLength) {
         throw Exception(
           'Merged file is $finalSize bytes, expected $contentLength bytes.',
         );
       }
- 
- 
 
       tmpDir.deleteSync(recursive: true);
       return outputFile;
@@ -411,5 +412,31 @@ class ChunkDownloader {
 
     _progressController.add(report);
     if (onProgress != null) onProgress(report);
+  }
+}
+
+class _MergeArgs {
+  final String tmpDirPath;
+  final String savePath;
+  final int numChunks;
+
+  _MergeArgs(this.tmpDirPath, this.savePath, this.numChunks);
+}
+
+Future<void> _mergeChunksTask(_MergeArgs args) async {
+  final sink = File(args.savePath).openWrite();
+
+  try {
+    for (int i = 0; i < args.numChunks; i++) {
+      final chunkFile = File(p.join(args.tmpDirPath, 'chunk_$i.part'));
+
+      if (!chunkFile.existsSync()) {
+        throw Exception('Missing chunk $i file.');
+      }
+
+      await sink.addStream(chunkFile.openRead());
+    }
+  } finally {
+    await sink.close();
   }
 }
