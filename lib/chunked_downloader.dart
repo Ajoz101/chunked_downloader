@@ -71,11 +71,35 @@ class Queue<T> {
   T removeFirst() => _items.removeAt(0);
 }
 
+Future<void> _mergeChunks(
+  String tmpDirPath,
+  String outputPath,
+  int numChunks,
+) async {
+  final sink = File(outputPath).openWrite();
+
+  try {
+    for (int i = 0; i < numChunks; i++) {
+      final chunkFile = File(p.join(tmpDirPath, 'chunk_$i.part'));
+
+      if (!chunkFile.existsSync()) {
+        throw Exception('Missing chunk $i file.');
+      }
+
+      await sink.addStream(chunkFile.openRead());
+    }
+  } finally {
+    await sink.close();
+  }
+}
+
 class ChunkDownloader {
-  final _progressController = StreamController<DownloadProgressReport>.broadcast();
+  final _progressController =
+      StreamController<DownloadProgressReport>.broadcast();
 
   /// Exposes live progress updates
-  Stream<DownloadProgressReport> get progressStream => _progressController.stream;
+  Stream<DownloadProgressReport> get progressStream =>
+      _progressController.stream;
 
   /// Starts downloading the file using multiple concurrent chunks.
   Future<File> download({
@@ -97,7 +121,8 @@ class ChunkDownloader {
           Uri.parse(url),
           headers: {'User-Agent': 'Flutter Downloader Package'},
         );
-        contentLength = int.tryParse(headResp.headers['content-length'] ?? '') ?? 0;
+        contentLength =
+            int.tryParse(headResp.headers['content-length'] ?? '') ?? 0;
         serverSupportsRanges =
             (headResp.headers['accept-ranges']?.toLowerCase() == 'bytes');
       } catch (e) {
@@ -105,18 +130,30 @@ class ChunkDownloader {
       }
 
       if (contentLength == 0 || !serverSupportsRanges) {
-        return await _singleStreamDownload(client, url, savePath, expectedLength: contentLength);
+        return await _singleStreamDownload(
+          client,
+          url,
+          savePath,
+          expectedLength: contentLength,
+        );
       }
 
       final probeOk = await _probeRangeSupport(client, url);
       if (!probeOk) {
-        return await _singleStreamDownload(client, url, savePath, expectedLength: contentLength);
+        return await _singleStreamDownload(
+          client,
+          url,
+          savePath,
+          expectedLength: contentLength,
+        );
       }
 
       final numChunks = math.max(1, requestedChunks);
       final chunkSize = (contentLength / numChunks).ceil();
       final parentDir = File(savePath).parent.path;
-      final tmpDir = Directory(p.join(parentDir, 'chunks_${p.basename(savePath)}'));
+      final tmpDir = Directory(
+        p.join(parentDir, 'chunks_${p.basename(savePath)}'),
+      );
       if (!tmpDir.existsSync()) tmpDir.createSync(recursive: true);
 
       final Map<int, ChunkProgress> progressMap = {};
@@ -124,54 +161,82 @@ class ChunkDownloader {
 
       for (int i = 0; i < numChunks; i++) {
         final start = i * chunkSize;
-        final end = (i == numChunks - 1) ? contentLength - 1 : (start + chunkSize - 1);
+        final end = (i == numChunks - 1)
+            ? contentLength - 1
+            : (start + chunkSize - 1);
         progressMap[i] = ChunkProgress()..totalBytes = (end - start + 1);
       }
 
       uiTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
-        _reportProgress(numChunks, progressMap, contentLength, stopwatch.elapsed, onProgress);
+        _reportProgress(
+          numChunks,
+          progressMap,
+          contentLength,
+          stopwatch.elapsed,
+          onProgress,
+        );
       });
 
       final semaphore = Semaphore(math.max(1, maxConcurrency));
       final List<Future<void>> downloadTasks = [];
       for (int i = 0; i < numChunks; i++) {
         final start = i * chunkSize;
-        final end = (i == numChunks - 1) ? contentLength - 1 : (start + chunkSize - 1);
+        final end = (i == numChunks - 1)
+            ? contentLength - 1
+            : (start + chunkSize - 1);
         final chunkPath = p.join(tmpDir.path, 'chunk_$i.part');
 
-        downloadTasks.add(semaphore.withResource(
-          () => _downloadChunk(client, url, start, end, chunkPath, progressMap[i]!),
-        ));
+        downloadTasks.add(
+          semaphore.withResource(
+            () => _downloadChunk(
+              client,
+              url,
+              start,
+              end,
+              chunkPath,
+              progressMap[i]!,
+            ),
+          ),
+        );
       }
 
       await Future.wait(downloadTasks);
 
       uiTimer.cancel();
       stopwatch.stop();
-      _reportProgress(numChunks, progressMap, contentLength, stopwatch.elapsed, onProgress);
+      _reportProgress(
+        numChunks,
+        progressMap,
+        contentLength,
+        stopwatch.elapsed,
+        onProgress,
+      );
 
       // Merge chunks inside a separate isolate to prevent UI stutters
       final outputFile = File(savePath);
       final tmpDirPath = tmpDir.path;
 
-      await Isolate.run(() async {
-        final sink = outputFile.openWrite();
-        try {
-          for (int i = 0; i < numChunks; i++) {
-            final chunkFile = File(p.join(tmpDirPath, 'chunk_$i.part'));
-            if (!chunkFile.existsSync()) {
-              throw Exception('Missing chunk $i file.');
-            }
-            await sink.addStream(chunkFile.openRead());
-          }
-        } finally {
-          await sink.close();
-        }
-      });
+      // await Isolate.run(() async {
+      //   final sink = outputFile.openWrite();
+      //   try {
+      //     for (int i = 0; i < numChunks; i++) {
+      //       final chunkFile = File(p.join(tmpDirPath, 'chunk_$i.part'));
+      //       if (!chunkFile.existsSync()) {
+      //         throw Exception('Missing chunk $i file.');
+      //       }
+      //       await sink.addStream(chunkFile.openRead());
+      //     }
+      //   } finally {
+      //     await sink.close();
+      //   }
+      // });
+      await Isolate.run(() => _mergeChunks(tmpDirPath, savePath, numChunks));
 
       final finalSize = await outputFile.length();
       if (finalSize != contentLength) {
-        throw Exception('Merged file is $finalSize bytes, expected $contentLength bytes.');
+        throw Exception(
+          'Merged file is $finalSize bytes, expected $contentLength bytes.',
+        );
       }
 
       tmpDir.deleteSync(recursive: true);
@@ -211,7 +276,9 @@ class ChunkDownloader {
 
     while (true) {
       final existingBytes = file.existsSync() ? await file.length() : 0;
-      if (expectedLength != null && expectedLength > 0 && existingBytes >= expectedLength) {
+      if (expectedLength != null &&
+          expectedLength > 0 &&
+          existingBytes >= expectedLength) {
         return file;
       }
 
@@ -321,12 +388,15 @@ class ChunkDownloader {
         ? 0.0
         : (totalDownloaded / totalContentLength).clamp(0.0, 1.0);
     final double elapsedSeconds = elapsed.inMilliseconds / 1000.0;
-    final double speedMBps =
-        elapsedSeconds > 0 ? (totalDownloaded / (1024 * 1024)) / elapsedSeconds : 0.0;
+    final double speedMBps = elapsedSeconds > 0
+        ? (totalDownloaded / (1024 * 1024)) / elapsedSeconds
+        : 0.0;
 
-    final double remainingBytes = (totalContentLength - totalDownloaded).toDouble();
-    final double remainingSeconds =
-        speedMBps > 0 ? (remainingBytes / (1024 * 1024)) / speedMBps : 0;
+    final double remainingBytes = (totalContentLength - totalDownloaded)
+        .toDouble();
+    final double remainingSeconds = speedMBps > 0
+        ? (remainingBytes / (1024 * 1024)) / speedMBps
+        : 0;
 
     final report = DownloadProgressReport(
       overallProgress: overallPercent,
