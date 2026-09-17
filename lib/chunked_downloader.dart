@@ -239,6 +239,7 @@ class ChunkDownloader {
         );
       }
 
+
       tmpDir.deleteSync(recursive: true);
       return outputFile;
     } finally {
