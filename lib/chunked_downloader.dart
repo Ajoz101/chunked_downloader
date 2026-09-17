@@ -71,28 +71,6 @@ class Queue<T> {
   T removeFirst() => _items.removeAt(0);
 }
 
-Future<void> _mergeChunks(
-  String tmpDirPath,
-  String outputPath,
-  int numChunks,
-) async {
-  final sink = File(outputPath).openWrite();
-
-  try {
-    for (int i = 0; i < numChunks; i++) {
-      final chunkFile = File(p.join(tmpDirPath, 'chunk_$i.part'));
-
-      if (!chunkFile.existsSync()) {
-        throw Exception('Missing chunk $i file.');
-      }
-
-      await sink.addStream(chunkFile.openRead());
-    }
-  } finally {
-    await sink.close();
-  }
-}
-
 class ChunkDownloader {
   final _progressController =
       StreamController<DownloadProgressReport>.broadcast();
@@ -233,10 +211,7 @@ class ChunkDownloader {
       // await Isolate.run(() => _mergeChunks(tmpDirPath, savePath, numChunks));
       // 1. In ChunkDownloader.download():
       // Replace your current Isolate.run call with this:
-      await Isolate.run(
-        () => _syncMergeChunks(_MergeArgs(tmpDirPath, savePath, numChunks)),
-      );
-      print("HAHAHAHAHAHAHA ++++++++++++++++++");
+      await _mergeChunksInIsolate(tmpDirPath, savePath, numChunks);
       final finalSize = await outputFile.length();
       if (finalSize != contentLength) {
         throw Exception(
@@ -454,4 +429,14 @@ void _syncMergeChunks(_MergeArgs args) {
   } finally {
     sink.closeSync();
   }
+}
+
+Future<void> _mergeChunksInIsolate(
+  String tmpDirPath,
+  String savePath,
+  int numChunks,
+) {
+  return Isolate.run(
+    () => _syncMergeChunks(_MergeArgs(tmpDirPath, savePath, numChunks)),
+  );
 }
