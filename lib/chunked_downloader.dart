@@ -232,9 +232,11 @@ class ChunkDownloader {
       // });
       // await Isolate.run(() => _mergeChunks(tmpDirPath, savePath, numChunks));
       // 1. In ChunkDownloader.download():
+      // Replace your current Isolate.run call with this:
       await Isolate.run(
-        () => _mergeChunksTask(_MergeArgs(tmpDirPath, savePath, numChunks)),
+        () => _syncMergeChunks(_MergeArgs(tmpDirPath, savePath, numChunks)),
       );
+      print("HAHAHAHAHAHAHA ++++++++++++++++++");
       final finalSize = await outputFile.length();
       if (finalSize != contentLength) {
         throw Exception(
@@ -420,13 +422,18 @@ class _MergeArgs {
   final String savePath;
   final int numChunks;
 
-  _MergeArgs(this.tmpDirPath, this.savePath, this.numChunks);
+  const _MergeArgs(this.tmpDirPath, this.savePath, this.numChunks);
 }
 
-Future<void> _mergeChunksTask(_MergeArgs args) async {
-  final sink = File(args.savePath).openWrite();
+/// MUST NOT be async! Synchronous file I/O prevents Dart from creating
+/// unsendable _AsyncCompleter objects inside the isolate boundary.
+void _syncMergeChunks(_MergeArgs args) {
+  final outputFile = File(args.savePath);
+  final sink = outputFile.openSync(mode: FileMode.write);
 
   try {
+    final buffer = List<int>.filled(64 * 1024, 0); // 64 KB buffer
+
     for (int i = 0; i < args.numChunks; i++) {
       final chunkFile = File(p.join(args.tmpDirPath, 'chunk_$i.part'));
 
@@ -434,9 +441,17 @@ Future<void> _mergeChunksTask(_MergeArgs args) async {
         throw Exception('Missing chunk $i file.');
       }
 
-      await sink.addStream(chunkFile.openRead());
+      final chunkStream = chunkFile.openSync(mode: FileMode.read);
+      try {
+        int bytesRead;
+        while ((bytesRead = chunkStream.readIntoSync(buffer)) > 0) {
+          sink.writeFromSync(buffer, 0, bytesRead);
+        }
+      } finally {
+        chunkStream.closeSync();
+      }
     }
   } finally {
-    await sink.close();
+    sink.closeSync();
   }
 }
